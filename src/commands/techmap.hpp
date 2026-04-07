@@ -12,8 +12,9 @@
 
  #ifndef TECHMAP_HPP
  #define TECHMAP_HPP
- 
+
  #include <iostream>
+ #include <sstream>
  #include <mockturtle/algorithms/mapper.hpp>
  #include <mockturtle/io/genlib_reader.hpp>
  #include <mockturtle/io/write_verilog.hpp>
@@ -23,16 +24,14 @@
  #include <mockturtle/properties/xmgcost.hpp>
  #include <mockturtle/utils/tech_library.hpp>
  #include <string>
- 
- #include "../core/properties.hpp"
- #include "../core/read_placement_file.hpp"
- #include "../core/RUDY.hpp"
- #include "../core/mapper_RUDY.hpp"
- // #include "../core/phymap.hpp"
- // #include <mockturtle/algorithms/phymap.hpp>
- 
+
+#include "../core/properties.hpp"
+#include "../core/read_placement_file.hpp"
+#include "../core/RUDY.hpp"
+#include "../core/mapper_RUDY.hpp"
+
  namespace alice {
- 
+
  class techmap_command : public command {
   public:
    explicit techmap_command(const environment::ptr& env)
@@ -46,40 +45,72 @@
      add_option("--node_position_pl, -p", pl_filename, "the pl filename");
      add_option("--node_position_def, -d", def_filename, "the def filename");
      add_flag("--rudy, -r", "RUDY-based standard cell mapping");
-     add_flag("--area, -a", "Area-only standard cell mapping");
-     add_flag("--delay, -e", "Delay-only standard cell mapping");
-     add_flag("--performance, -w",
-              "Performance mode: wirelength-only standard cell mapping");
-     add_flag("--power, -b",
-              "Power mode: total wirelength-driven standard cell mapping");
-     add_option("--trade_off, -t", trade_off,
-                "The trade-off between power mode (1) and performance mode (0), "
-                "range: [0,1], default = performance mode (0)");
-     add_flag("--verbose, -v", "print the information");
-   }
- 
+    add_flag("--area, -a", "Area-only standard cell mapping");
+    add_flag("--delay, -e", "Delay-only standard cell mapping");
+    add_flag("--performance, -w",
+             "Performance mode: wirelength-only standard cell mapping");
+    add_flag("--power, -b",
+             "Power mode: total wirelength-driven standard cell mapping");
+    add_option("--trade_off, -t", trade_off,
+               "The trade-off between power mode (1) and performance mode (0), "
+               "range: [0,1], default = performance mode (0)");
+    add_flag("--verbose, -v", "print the information");
+    add_option("--wire_r", wire_r, "Wire resistance (ohm/um) for Elmore wire delay. "
+               "Default: 0.0323 (set_wire_rc -signal for ASAP7)");
+    add_option("--wire_c", wire_c, "Wire capacitance (fF/um) for Elmore wire delay. "
+               "Default: 0.1732 (set_wire_rc -signal for ASAP7)");
+  }
+
    rules validity_rules() const {
      return {has_store_element<std::vector<mockturtle::gate>>(env)};
    }
- 
+
   private:
    std::string filename = "techmap.v";
    std::string pl_filename = "";
    std::string def_filename = "";
    uint32_t cut_limit{49u};
    double trade_off = 0.0;
- 
+   double wire_r = 0.0;   // will be set to default in execute()
+   double wire_c = 0.0;   // will be set to default in execute()
+
   protected:
    void execute() {
      /* derive genlib */
      std::vector<mockturtle::gate> gates =
          store<std::vector<mockturtle::gate>>().current();
      mockturtle::tech_library<5> lib(gates);
- 
-     mockturtle::map_params ps;
-     mockturtle::map_stats st;
-     ps.cut_enumeration_ps.cut_limit = cut_limit;
- 
+
+    mockturtle::map_params ps;
+    mockturtle::map_stats st;
+    ps.cut_enumeration_ps.cut_limit = cut_limit;
+
+    // Default wire RC: set_wire_rc -signal for ASAP7 (0.0323 ohm/um, 0.173 fF/um)
+    // These are used when -d (DEF) is provided, unless --wire_r/--wire_c are specified
+    double default_wire_r = 3.23151E-02;
+    double default_wire_c = 1.73323E-01;
+
+    // When -d (DEF file) is used, enable wire delay with default RC values
+    // User can override with --wire_r and/or --wire_c
+    if (is_set("node_position_def")) {
+      ps.wire_r_per_um = is_set("wire_r") ? wire_r : default_wire_r;
+      ps.wire_c_per_um = is_set("wire_c") ? wire_c : default_wire_c;
+      if (!is_set("wire_r") && !is_set("wire_c")) {
+        std::cout << "[INFO] Wire delay enabled with default RC "
+                  << "(set_wire_rc -signal): "
+                  << "R=" << ps.wire_r_per_um << " ohm/um, "
+                  << "C=" << ps.wire_c_per_um << " fF/um" << std::endl;
+      } else {
+        std::cout << "[INFO] Wire delay enabled with RC: "
+                  << "R=" << ps.wire_r_per_um << " ohm/um, "
+                  << "C=" << ps.wire_c_per_um << " fF/um" << std::endl;
+      }
+    } else {
+      // No DEF file: no wire delay (backward compatible)
+      ps.wire_r_per_um = 0.0;
+      ps.wire_c_per_um = 0.0;
+    }
+
      if (is_set("area"))
        ps.strategy = map_params::area;
      else if (is_set("delay"))
@@ -95,7 +126,7 @@
      else
        ps.strategy = map_params::def;
      if (is_set("verbose")) ps.verbose = true;
- 
+
      stopwatch<>::duration time{0};
      call_with_stopwatch(time, [&]() {
        if (is_set("xmg")) {
@@ -107,18 +138,18 @@
            xmg_profile_gates(xmg, stats);
            std::cout << "[i] ";
            stats.report();
- 
+
            phyLS::xmg_critical_path_stats critical_stats;
            phyLS::xmg_critical_path_profile_gates(xmg, critical_stats);
            std::cout << "[i] ";
            critical_stats.report();
- 
+
            auto res = mockturtle::map(xmg, lib, ps, &st);
- 
+
            if (is_set("output")) {
              write_verilog_with_binding(res, filename);
            }
- 
+
            std::cout << fmt::format(
                "[i] Mapped XMG into #gates = {} area = {:.2f} delay = {:.2f}\n",
                res.num_gates(), st.area, st.delay);
@@ -128,13 +159,13 @@
            std::cerr << "[e] no MIG in the store\n";
          } else {
            auto mig = store<mig_network>().current();
- 
+
            auto res = mockturtle::map(mig, lib, ps, &st);
- 
+
            if (is_set("output")) {
              write_verilog_with_binding(res, filename);
            }
- 
+
            std::cout << fmt::format(
                "Mapped MIG into #gates = {} area = {:.2f} delay = {:.2f}\n",
                res.num_gates(), st.area, st.delay);
@@ -144,13 +175,13 @@
            std::cerr << "[e] no k-LUT in the store\n";
          } else {
            auto lut = store<klut_network>().current();
- 
+
            auto res = mockturtle::map(lut, lib, ps, &st);
- 
+
            if (is_set("output")) {
              write_verilog_with_binding(res, filename);
            }
- 
+
            std::cout << fmt::format(
                "Mapped k-LUT into #gates = {} area = {:.2f} delay = {:.2f}\n",
                res.num_gates(), st.area, st.delay);
@@ -160,13 +191,13 @@
            std::cerr << "[e] no XAG in the store\n";
          } else {
            auto xag = store<xag_network>().current();
- 
+
            auto res = mockturtle::map(xag, lib, ps, &st);
- 
+
            if (is_set("output")) {
              write_verilog_with_binding(res, filename);
            }
- 
+
            std::cout << fmt::format(
                "Mapped XAG into #gates = {} area = {:.2f} delay = {:.2f}\n",
                res.num_gates(), st.area, st.delay);
@@ -196,18 +227,19 @@
          } else {
            auto aig = store<aig_network>().current();
            if (is_set("node_position_def")) {
-             std::vector<mockturtle::node_position> np(aig.size() +
-                                                       aig.num_pos());
-             phyLS::read_def_file(def_filename, np, aig.num_pis());
- 
-             auto res = mockturtle::map(aig, lib, np, ps, &st);
-             if (is_set("output")) write_verilog_with_binding(res, filename);
-             std::cout << fmt::format(
-                 "Mapped AIG into #gates = {}, area = {:.2f}, delay = {:.2f}, "
-                 "power = {:.2f}, wirelength = {:.2f}, total_wirelength = "
-                 "{:.2f}\n",
-                 res.num_gates(), st.area, st.delay, st.power, st.wirelength,
-                 st.total_wirelength);
+            std::vector<mockturtle::node_position> np(aig.size() +
+                                                      aig.num_pos());
+            phyLS::read_def_file(def_filename, np, aig.num_pis());
+
+            // Use map with position info to support wire delay in cut evaluation
+            auto res = mockturtle::map(aig, lib, np, ps, &st);
+            if (is_set("output")) write_verilog_with_binding(res, filename);
+            std::cout << fmt::format(
+                "Mapped AIG into #gates = {}, area = {:.2f}, delay = {:.2f}, "
+                "power = {:.2f}, wirelength = {:.2f}, total_wirelength = "
+                "{:.2f}\n",
+                res.num_gates(), st.area, st.delay, st.power, st.wirelength,
+                st.total_wirelength);
            } else {
              auto res = mockturtle::map(aig, lib, ps, &st);
              if (is_set("output")) write_verilog_with_binding(res, filename);
@@ -223,10 +255,9 @@
      std::cout << fmt::format("[CPU time]: {:5.3f} seconds\n", to_seconds(time));
    }
  };
- 
+
  ALICE_ADD_COMMAND(techmap, "Mapping")
- 
+
  }  // namespace alice
- 
+
  #endif
- 

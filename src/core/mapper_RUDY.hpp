@@ -101,16 +101,13 @@ public:
 
     /* execute mapping */
     /* compute mapping for delay */
-    std::cout << "delay flow" << std::endl;
     bool success = compute_mapping<false>();
     if (!success) return res;
 
-    std::cout << "area flow" << std::endl;
     compute_required_time();
     success = compute_mapping<true>();
     if (!success) return res;
 
-    std::cout << "WL flow" << std::endl;
     compute_required_time();
     success = compute_mapping_wirelength<false, true>();
     if (!success) return res;
@@ -122,12 +119,10 @@ public:
     set_RUDY_map(&match_position, &res_temp, res.num_pis(), res.num_pos());
     calculateRUDY();
 
-    std::cout << "RUDY flow" << std::endl;
     compute_required_time();
     success = compute_wireCongest();
     if (!success) return res;
 
-    std::cout << "exact area flow" << std::endl;
     compute_required_time();
     success = compute_mapping_exact<false>();
     if (!success) return res;
@@ -166,6 +161,7 @@ protected:
         /* all terminals have flow 1.0 */
         node_data.flows[0] = node_data.flows[1] = node_data.flows[2] = 0.0f;
         node_data.arrival[0] = node_data.arrival[1] = 0.0f;
+        node_data.total_delay[0] = node_data.total_delay[1] = 0.0f;
         match_constants( index );
       }
       else if ( ntk.is_ci( n ) )
@@ -175,6 +171,8 @@ protected:
         node_data.arrival[0] = 0.0f;
         /* PIs have the negative phase implemented with an inverter */
         node_data.arrival[1] = lib_inv_delay;
+        node_data.total_delay[0] = 0.0f;
+        node_data.total_delay[1] = lib_inv_delay;
       }
     } );
   }
@@ -501,6 +499,8 @@ protected:
     double best_total_wirelength = std::numeric_limits<double>::max();
     double best_wireCongest = std::numeric_limits<double>::max();
     double best_congest_flow = std::numeric_limits<double>::max();
+    double best_wire_delay = 0.0;
+    double best_total_delay = std::numeric_limits<double>::max();
 
     node_position best_gate_position;
     bool best_position = false;
@@ -550,6 +550,9 @@ protected:
           compute_match_total_wirelength(cut, best_gate_position, best_phase);
       best_congest_flow =
           (wireCongestCompute(n, cut, best_gate_position, best_phase)).second;
+      // Compute wire delay using Elmore model
+      best_wire_delay = wireDelayElmore(best_wirelength);
+      best_total_delay = best_arrival + best_wire_delay;
     }
 
     for (auto const& cut : cuts.cuts(index)) {
@@ -598,20 +601,22 @@ protected:
           ++ctr;
         }
 
-        if (worst_arrival > node_data.required[phase] + epsilon) continue;
-        if (weight_w_d(
-                worst_wirelength / node_data.wirelength[phase],
-                worst_total_wirelength / node_data.total_wirelength[phase],
-                worst_arrival / node_data.required[phase]) > 1 + epsilon)
-          continue;
+        // Compute wire delay using Elmore model and combine with cell delay
+        double wire_delay = wireDelayElmore(worst_wirelength);
+        double total_delay = worst_arrival + wire_delay;
+
+        // Only check required time (no wirelength check)
+        if (total_delay > node_data.required[phase] + epsilon) continue;
 
         if (compare_map_rudy(worst_congest_flow, best_congest_flow,
-                             worst_wirelength, best_wirelength, worst_arrival,
-                             best_arrival, worst_total_wirelength,
+                             worst_wirelength, best_wirelength, total_delay,
+                             best_total_delay, worst_total_wirelength,
                              best_total_wirelength, cut->size(), best_size)) {
           best_wirelength = worst_wirelength;
           best_total_wirelength = worst_total_wirelength;
           best_arrival = worst_arrival;
+          best_wire_delay = wire_delay;
+          best_total_delay = total_delay;
           best_area_flow = area_local;
           best_size = cut->size();
           best_cut = cut_index;
@@ -633,6 +638,7 @@ protected:
     node_data.total_wirelength[phase] = best_total_wirelength;
     node_data.flows[phase] = best_area_flow;
     node_data.arrival[phase] = best_arrival;
+    node_data.total_delay[phase] = best_total_delay;
     node_data.area[phase] = best_area;
     node_data.best_cut[phase] = best_cut;
     node_data.phase[phase] = best_phase;
@@ -764,9 +770,9 @@ protected:
       const auto index = ntk.node_to_index( ntk.get_node( s ) );
 
       if (ntk.is_complemented(s)) {
-        delay = std::max(delay, node_match[index].arrival[1]);
+        delay = std::max(delay, node_match[index].total_delay[1]);
       } else {
-        delay = std::max(delay, node_match[index].arrival[0]);
+        delay = std::max(delay, node_match[index].total_delay[0]);
       }
 
       if constexpr ( !ELA )
@@ -901,11 +907,11 @@ protected:
       const auto index = ntk.node_to_index(ntk.get_node(s));
 
       if (ntk.is_complemented(s)) {
-        delay = std::max(delay, node_match[index].arrival[1]);
+        delay = std::max(delay, node_match[index].total_delay[1]);
         wirelength = std::max(wirelength, node_match[index].wirelength[1]);
         total_wirelength += node_match[index].total_wirelength[1];
       } else {
-        delay = std::max(delay, node_match[index].arrival[0]);
+        delay = std::max(delay, node_match[index].total_delay[0]);
         wirelength = std::max(wirelength, node_match[index].wirelength[0]);
         total_wirelength += node_match[index].total_wirelength[0];
       }
@@ -1093,7 +1099,8 @@ protected:
         for ( auto leaf : best_cut )
         {
           auto phase = ( node_data.phase[use_phase] >> ctr ) & 1;
-          node_match[leaf].required[phase] = std::min( node_match[leaf].required[phase], node_data.required[use_phase] - supergate->tdelay[ctr] );
+          double leaf_wire_delay = wireDelayElmore(node_match[leaf].wirelength[phase]);
+          node_match[leaf].required[phase] = std::min( node_match[leaf].required[phase], node_data.required[use_phase] - supergate->tdelay[ctr] - leaf_wire_delay );
           ++ctr;
         }
       }
@@ -1106,7 +1113,8 @@ protected:
         for ( auto leaf : best_cut )
         {
           auto phase = ( node_data.phase[other_phase] >> ctr ) & 1;
-          node_match[leaf].required[phase] = std::min( node_match[leaf].required[phase], node_data.required[other_phase] - supergate->tdelay[ctr] );
+          double leaf_wire_delay = wireDelayElmore(node_match[leaf].wirelength[phase]);
+          node_match[leaf].required[phase] = std::min( node_match[leaf].required[phase], node_data.required[other_phase] - supergate->tdelay[ctr] - leaf_wire_delay );
           ++ctr;
         }
       }
@@ -2095,7 +2103,7 @@ protected:
         if ( !ntk.is_constant( n ) && ntk.is_ci( n ) && !ntk.is_complemented( f ) )
         {
           area += lib_buf_area;
-          delay = std::max( delay, node_match[ntk.node_to_index( n )].arrival[0] + lib_inv_delay );
+          delay = std::max( delay, node_match[ntk.node_to_index( n )].total_delay[0] + lib_inv_delay );
           buffers = true;
         }
       } );
@@ -2573,25 +2581,22 @@ protected:
     return false;
   }
 
-  inline bool compare_map_rudy(double rudy, double best_rudy, double wirelength,
-                               double best_wirelength, double arrival,
-                               double best_arrival, double total_wirelength,
-                               double best_total_wirelength, uint32_t size,
+  // Simplified: only compare total_delay (cell_delay + wire_delay)
+  // Remove congestion and wirelength from cut evaluation
+  inline bool compare_map_rudy(double /*rudy*/, double /*best_rudy*/,
+                               double /*wirelength*/, double /*best_wirelength*/,
+                               double arrival, double best_arrival,
+                               double /*total_wirelength*/,
+                               double /*best_total_wirelength*/, uint32_t size,
                                uint32_t best_size) {
-    if (rudy < best_rudy - epsilon) {
+    // Only compare total_delay
+    if (arrival < best_arrival - epsilon) {
       return true;
-    } else if (rudy > best_rudy + epsilon) {
-      return false;
-    } else if (weight_w_d(wirelength / best_wirelength,
-                          total_wirelength / best_total_wirelength,
-                          arrival / best_arrival) < (1 - epsilon)) {
-      return true;
-    } else if (weight_w_d(wirelength / best_wirelength,
-                          total_wirelength / best_total_wirelength,
-                          arrival / best_arrival) > (1 + epsilon)) {
+    } else if (arrival > best_arrival + epsilon) {
       return false;
     }
 
+    // If delay is equal, compare size (smaller is better)
     if (size < best_size) return true;
     return false;
   }
@@ -2677,6 +2682,13 @@ protected:
       ++ctr;
     }
     return worst_wl;
+  }
+
+  // Elmore wire delay model: wire_delay = R * C * L^2 / 2 * 1e-3
+  // R: ohm/um, C: fF/um, L: um → result: ps
+  double wireDelayElmore(double wire_length_um) const {
+    return ps.wire_r_per_um * ps.wire_c_per_um
+           * wire_length_um * wire_length_um * 0.5 * 1e-3;
   }
 
   double compute_wirelength(cut_t const& cut) {

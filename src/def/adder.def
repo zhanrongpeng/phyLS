@@ -1,3 +1,8 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN adder ;
+UNITS DISTANCE MICRONS 1000 ;
 COMPONENTS 1020 ;
    - and_257_ and
       + PLACED ( 1134 8868 ) N ;
@@ -3587,3 +3592,4 @@ PINS 386 ;
       + PLACED ( 2560 0 ) N
       + LAYER metal3 ( 0 0 ) ( 510 100 ) ;
 END PINS
+END DESIGN
