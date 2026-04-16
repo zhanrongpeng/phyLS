@@ -56,9 +56,9 @@
                "range: [0,1], default = performance mode (0)");
     add_flag("--verbose, -v", "print the information");
     add_option("--wire_r", wire_r, "Wire resistance (ohm/um) for Elmore wire delay. "
-               "Default: 0.0323 (set_wire_rc -signal for ASAP7)");
+               "Default: uses set_wire_rc -signal RC (0.0323 ohm/um for ASAP7)");
     add_option("--wire_c", wire_c, "Wire capacitance (fF/um) for Elmore wire delay. "
-               "Default: 0.1732 (set_wire_rc -signal for ASAP7)");
+               "Default: uses set_wire_rc -signal RC (0.173 fF/um for ASAP7)");
   }
 
    rules validity_rules() const {
@@ -86,25 +86,18 @@
     ps.cut_enumeration_ps.cut_limit = cut_limit;
 
     // Default wire RC: set_wire_rc -signal for ASAP7 (0.0323 ohm/um, 0.173 fF/um)
-    // These are used when -d (DEF) is provided, unless --wire_r/--wire_c are specified
+    // Hardcoded values for Elmore wire delay model
     double default_wire_r = 3.23151E-02;
     double default_wire_c = 1.73323E-01;
 
-    // When -d (DEF file) is used, enable wire delay with default RC values
-    // User can override with --wire_r and/or --wire_c
+    // When -d (DEF file) is used, enable wire delay with averaged RC
     if (is_set("node_position_def")) {
-      ps.wire_r_per_um = is_set("wire_r") ? wire_r : default_wire_r;
-      ps.wire_c_per_um = is_set("wire_c") ? wire_c : default_wire_c;
-      if (!is_set("wire_r") && !is_set("wire_c")) {
-        std::cout << "[INFO] Wire delay enabled with default RC "
-                  << "(set_wire_rc -signal): "
-                  << "R=" << ps.wire_r_per_um << " ohm/um, "
-                  << "C=" << ps.wire_c_per_um << " fF/um" << std::endl;
-      } else {
-        std::cout << "[INFO] Wire delay enabled with RC: "
-                  << "R=" << ps.wire_r_per_um << " ohm/um, "
-                  << "C=" << ps.wire_c_per_um << " fF/um" << std::endl;
-      }
+      // Use hardcoded signal RC (set_wire_rc -signal for ASAP7)
+      ps.wire_r_per_um = default_wire_r;
+      ps.wire_c_per_um = default_wire_c;
+      std::cout << "[INFO] Wire delay enabled with signal RC: "
+                << "R=" << ps.wire_r_per_um << " ohm/um, "
+                << "C=" << ps.wire_c_per_um << " fF/um" << std::endl;
     } else {
       // No DEF file: no wire delay (backward compatible)
       ps.wire_r_per_um = 0.0;
@@ -123,6 +116,8 @@
        ps.trade_off = trade_off;
        ps.strategy = map_params::balance;
      }
+     else if (is_set("node_position_def"))
+       ps.strategy = map_params::delay_total;
      else
        ps.strategy = map_params::def;
      if (is_set("verbose")) ps.verbose = true;
