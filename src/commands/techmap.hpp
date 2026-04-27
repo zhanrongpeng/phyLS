@@ -59,6 +59,11 @@
                "Default: uses set_wire_rc -signal RC (0.0323 ohm/um for ASAP7)");
     add_option("--wire_c", wire_c, "Wire capacitance (fF/um) for Elmore wire delay. "
                "Default: uses set_wire_rc -signal RC (0.173 fF/um for ASAP7)");
+    add_option("--wire_delay_coeff, -k", wire_delay_coeff,
+               "Wire delay scaling coefficient for Elmore model (0.0 to 1.0, default 1.0). "
+               "Lower values reduce wire delay influence in cut selection, "
+               "e.g., 0.1~0.5 makes cell delay more important. "
+               "Only effective when -d (DEF file) is used.");
   }
 
    rules validity_rules() const {
@@ -73,6 +78,7 @@
    double trade_off = 0.0;
    double wire_r = 0.0;   // will be set to default in execute()
    double wire_c = 0.0;   // will be set to default in execute()
+   double wire_delay_coeff = 1.0;  // wire delay scaling coefficient
 
   protected:
    void execute() {
@@ -98,6 +104,11 @@
       std::cout << "[INFO] Wire delay enabled with signal RC: "
                 << "R=" << ps.wire_r_per_um << " ohm/um, "
                 << "C=" << ps.wire_c_per_um << " fF/um" << std::endl;
+      ps.wire_delay_coefficient = wire_delay_coeff;
+      if (wire_delay_coeff < 1.0) {
+        std::cout << "[INFO] Wire delay coefficient: " << ps.wire_delay_coefficient
+                  << " (wire delay contribution reduced)" << std::endl;
+      }
     } else {
       // No DEF file: no wire delay (backward compatible)
       ps.wire_r_per_um = 0.0;
